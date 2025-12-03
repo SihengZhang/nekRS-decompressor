@@ -1,0 +1,96 @@
+#include <math.h>
+#include "linspaceVector.hpp"
+
+#ifdef __okl__
+
+void codedFixedValueVelocity(bcData *bc)
+{
+  bc->u = 0.0;
+  bc->v = 0.0;
+  bc->w = 0.0;
+}
+
+#endif
+
+#include "compression.h"
+static occa::memory o_U;
+static occa::memory o_Ue;
+static occa::memory o_P;
+static occa::memory o_T;
+static occa::memory o_S;
+static occa::memory o_mult;
+
+void UDF_Setup0(MPI_Comm comm, setupAide &options) 
+{
+}
+
+void UDF_Setup()
+{
+  auto mesh = nrs->mesh;
+
+  o_U  = platform->device.malloc<dfloat>(nrs->NVfields * nrs->fieldOffset);
+  o_Ue = platform->device.malloc<dfloat>(nrs->NVfields * nrs->fieldOffset);
+  o_P  = platform->device.malloc<dfloat>(nrs->NVfields);
+  // o_T  = platform->device.malloc<dfloat>(nrs->NVfields * nrs->fieldOffset);
+  // o_S  = platform->device.malloc<dfloat>(nrs->NVfields * nrs->fieldOffset);
+  
+  o_mult  = platform->device.malloc<dfloat>(nrs->fieldOffset);
+  platform->linAlg->fill(mesh->Nlocal, 1.0, o_mult);
+  oogs::startFinish(o_mult, 1, nrs->fieldOffset, ogsDfloat, ogsAdd, mesh->oogs);
+  platform->linAlg->ady(mesh->Nlocal, 1.0, o_mult);
+}
+
+void UDF_ExecuteStep(double time, int tstep)
+{
+
+  auto mesh = nrs->mesh;
+  static std::unique_ptr<iofld> iofld_N;
+  static std::unique_ptr<iofld> iofld_Ne;
+
+  // if (nrs->checkpointStep) {
+  if (tstep==0) {
+    int nVals = 1;
+    double relMin = 1e-4;
+    double relMax = 1e-1;
+
+    for (int i = 0; i < nVals; i++) {
+      // double relEb = pow(10.0, log10(relMin) + i * (log10(relMax) - log10(relMin)) / (nVals - 1));
+      double relEb = 1e-3;
+      std::string fname = "comp_" + std::to_string(i) + ".dat";
+      compressAndReport(nrs, relEb, o_U, o_Ue, fname);
+
+      auto fields = readCompressedFieldMPI(fname, platform->comm.mpiComm);
+
+      // auto X = decompressField<double>(nrs,fields[0]);
+      // auto Y = decompressField<double>(nrs,fields[1]);
+      // auto Z = decompressField<double>(nrs,fields[2]);
+
+      auto Ux = decompressField<double>(nrs,fields[3]);
+      auto Uy = decompressField<double>(nrs,fields[4]);
+      auto Uz = decompressField<double>(nrs,fields[5]);
+
+      // copy to device if needed
+      // mesh->o_x.copyFrom(X.data(), mesh->Nlocal);
+      // mesh->o_y.copyFrom(Y.data(), mesh->Nlocal);
+      // mesh->o_z.copyFrom(Z.data(), mesh->Nlocal);
+
+      (o_U + 0 * nrs->fieldOffset).copyFrom(Ux.data(), mesh->Nlocal);
+      (o_U + 1 * nrs->fieldOffset).copyFrom(Uy.data(), mesh->Nlocal);
+      (o_U + 2 * nrs->fieldOffset).copyFrom(Uz.data(), mesh->Nlocal);
+
+      oogs::startFinish(o_U, 3, nrs->fieldOffset, ogsDfloat, ogsAdd, mesh->oogs);
+      platform->linAlg->axmyVector(mesh->Nlocal, nrs->fieldOffset, 0, 1.0, o_mult, o_U);
+      outfld_wrapper(nrs, iofld_N, mesh->N, o_U, relEb, tstep, "decomp");
+
+      platform->linAlg->axpbyMany(mesh->Nlocal, 3, nrs->fieldOffset, -1.0, nrs->o_U, 1.0, o_U);
+      outfld_wrapper(nrs, iofld_Ne, mesh->N, o_U, relEb, tstep, "decomp_error");
+    }
+  }
+
+  if (tstep==0) {
+    iofld_N->close();
+    iofld_Ne->close();
+  }
+  
+  exit(0);
+}
