@@ -263,6 +263,7 @@ std::vector<T> decompressFieldMPI(const CompressedFieldPerRank &CF, MPI_Comm com
                     // reinterpret bytes as T
                     decompressed[index + i] = decompressedPtr[i];
                 }
+                free(decompressedPtr);
                 index += numT;
             } catch (const std::invalid_argument& e) {
                 std::cerr << "Caught exception: " << e.what() << std::endl;
@@ -303,11 +304,17 @@ int main(int argc, char* argv[]) {
     }
 
     auto decomp0 = decompressFieldMPI<double>(all_fields[0], MPI_COMM_WORLD);
+    std::vector<unsigned char>().swap(all_fields[0].bytes); // free the data of field
     auto decomp1 = decompressFieldMPI<double>(all_fields[1], MPI_COMM_WORLD);
+    std::vector<unsigned char>().swap(all_fields[1].bytes);
     auto decomp2 = decompressFieldMPI<double>(all_fields[2], MPI_COMM_WORLD);
+    std::vector<unsigned char>().swap(all_fields[2].bytes);
     auto decomp3 = decompressFieldMPI<double>(all_fields[3], MPI_COMM_WORLD);
+    std::vector<unsigned char>().swap(all_fields[3].bytes);
     auto decomp4 = decompressFieldMPI<double>(all_fields[4], MPI_COMM_WORLD);
+    std::vector<unsigned char>().swap(all_fields[4].bytes);
     auto decomp5 = decompressFieldMPI<double>(all_fields[5], MPI_COMM_WORLD);
+    std::vector<unsigned char>().swap(all_fields[5].bytes);
 
     MPI_Finalize();
     return 0;
