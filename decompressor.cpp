@@ -10,7 +10,8 @@
 #include <cstring> 
 
 // #include "sz3c.h"
-#include "SZ3/api/sz.hpp"
+//#include "SZ3/api/sz.hpp"
+#include "vtk_sz3.h"
 #include <mpi.h>
 
 struct CompressedFieldPerRank {
