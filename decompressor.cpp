@@ -9,7 +9,8 @@
 #include <stdexcept>  
 #include <cstring> 
 
-#include "sz3c.h"
+// #include "sz3c.h"
+#include "SZ3/api/sz.hpp"
 #include <mpi.h>
 
 struct CompressedFieldPerRank {
@@ -152,8 +153,8 @@ std::vector<CompressedFieldPerRank> readCompressedFieldMPI(const std::string &fi
         // set number of blocks in local rank
         uint64_t nSimRanks = (uint64_t)perFieldNumElems[f].size();
         size_t myBlocks = 0;
-        if (nRanks >= nSimRanks) {
-            myBlocks = (rank < nSimRanks ? 1 : 0);
+        if ((uint64_t)nRanks >= nSimRanks) {
+            myBlocks = ((uint64_t)rank < nSimRanks ? 1 : 0);
         } else {
             myBlocks = nSimRanks / nRanks;
             if(rank == 0) myBlocks = nSimRanks - myBlocks * (nRanks - 1);
@@ -173,7 +174,7 @@ std::vector<CompressedFieldPerRank> readCompressedFieldMPI(const std::string &fi
         }
         
         // set number of points per block & compression flags for each block
-        for (int i = myMetaDispl / sizeof(uint64_t); i < myMetaDispl / sizeof(uint64_t) + myBlocks; ++i) {
+        for (size_t i = myMetaDispl / sizeof(uint64_t); i < myMetaDispl / sizeof(uint64_t) + myBlocks; ++i) {
             CF.ptsPerBlock.push_back(perFieldPtsPerElem[f][i]);
             CF.compressionFlags.push_back(perFieldCompFlag[f][i]);
         } 
@@ -232,7 +233,7 @@ std::vector<T> decompressFieldMPI(const CompressedFieldPerRank &CF, MPI_Comm com
     MPI_Comm_size(comm, &nRanks);
 
     uint64_t totalPts = 0;
-    for (int i = 0; i < CF.numBlocks; i++) {
+    for (size_t i = 0; i < CF.numBlocks; i++) {
         totalPts += CF.ptsPerBlock[i];
     }
     std::vector<T> decompressed(totalPts);
@@ -254,11 +255,22 @@ std::vector<T> decompressFieldMPI(const CompressedFieldPerRank &CF, MPI_Comm com
                 const unsigned char* compPtr = CF.bytes.data() + CF.blockOffsets[b];
                 uint64_t compSize = CF.compressedSizes[b];
                 uint64_t numT = CF.ptsPerBlock[b];
-                T* decompressedPtr = (T*) SZ_decompress(
-                    std::is_same<T,double>::value ? SZ_DOUBLE : SZ_FLOAT,
-                    const_cast<unsigned char*>(compPtr),
-                    compSize,
-                    0, 0, 0, 1, numT);
+                
+                // SZ3c api implementation: 
+                // T* decompressedPtr = (T*) SZ_decompress(
+                //     std::is_same<T,double>::value ? SZ_DOUBLE : SZ_FLOAT,
+                //     const_cast<unsigned char*>(compPtr),
+                //     compSize,
+                //     0, 0, 0, 1, numT);
+
+                // SZ3 api implementation:
+                T* decompressedPtr = static_cast<T*>(malloc(numT * sizeof(T)));
+                SZ3::Config config;
+                SZ_decompress<T>(config, 
+                    reinterpret_cast<char*>(const_cast<unsigned char*>(compPtr)), 
+                    compSize, 
+                    decompressedPtr);
+
                 for (size_t i = 0; i < numT; ++i) {
                     // reinterpret bytes as T
                     decompressed[index + i] = decompressedPtr[i];
@@ -303,18 +315,22 @@ int main(int argc, char* argv[]) {
         std::cout << "File read complete."<<std::endl;
     }
 
-    auto decomp0 = decompressFieldMPI<double>(all_fields[0], MPI_COMM_WORLD);
-    std::vector<unsigned char>().swap(all_fields[0].bytes); // free the data of field
-    auto decomp1 = decompressFieldMPI<double>(all_fields[1], MPI_COMM_WORLD);
-    std::vector<unsigned char>().swap(all_fields[1].bytes);
-    auto decomp2 = decompressFieldMPI<double>(all_fields[2], MPI_COMM_WORLD);
-    std::vector<unsigned char>().swap(all_fields[2].bytes);
-    auto decomp3 = decompressFieldMPI<double>(all_fields[3], MPI_COMM_WORLD);
-    std::vector<unsigned char>().swap(all_fields[3].bytes);
-    auto decomp4 = decompressFieldMPI<double>(all_fields[4], MPI_COMM_WORLD);
-    std::vector<unsigned char>().swap(all_fields[4].bytes);
-    auto decomp5 = decompressFieldMPI<double>(all_fields[5], MPI_COMM_WORLD);
-    std::vector<unsigned char>().swap(all_fields[5].bytes);
+    uint64_t local_n = 0;
+    std::vector<std::vector<double>> decomp (all_fields.size());
+
+    for(size_t i = 0; i < all_fields.size(); i++) {
+        decomp[i] = decompressFieldMPI<double>(all_fields[i], MPI_COMM_WORLD);
+        local_n += decomp[i].size();
+        std::vector<unsigned char>().swap(all_fields[i].bytes);
+    }
+
+    uint64_t total_n = 0;
+    MPI_Reduce(&local_n, &total_n, 1, MPI_UINT64_T, MPI_SUM, 0, MPI_COMM_WORLD);
+
+    if(world_rank == 0) {
+        std::cout << "Successfully decompressed "<<all_fields.size()<<" fields with total "<<total_n * sizeof(double)<<" bytes"<<std::endl;
+    }
+
 
     MPI_Finalize();
     return 0;
